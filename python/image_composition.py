@@ -4,6 +4,7 @@ import json
 import warnings
 import random
 import numpy as np
+from datetime import datetime
 from pathlib import Path
 from tqdm import tqdm
 from PIL import Image, ImageEnhance
@@ -101,7 +102,7 @@ class MaskJsonUtils():
 
         # Write the JSON output file
         output_file_path = Path(self.output_dir) / 'mask_definitions.json'
-        with open(output_file_path), 'w+') as json_file:
+        with open(output_file_path, 'w+') as json_file:
             json_file.write(json.dumps(masks_obj))
 
 class ImageComposition():
@@ -119,6 +120,8 @@ class ImageComposition():
         # Args:
         #     args: the ArgumentParser command line arguments
 
+        self.silent = args.silent
+
         # Validate the count
         assert args.count > 0, 'count must be greater than 0'
         self.count = args.count
@@ -134,7 +137,7 @@ class ImageComposition():
             self.output_type = '.jpg' # default
         else:
             if args.output_type[0] != '.':
-                self.output_type = f'.{args.output_type'
+                self.output_type = f'.{args.output_type}'
             assert self.output_type in self.allowed_output_types, f'output_type is not supported: {self.output_type}'
 
         # Validate and process output and input directories
@@ -151,13 +154,14 @@ class ImageComposition():
         self.images_output_dir.mkdir(exist_ok=True)
         self.masks_output_dir.mkdir(exist_ok=True)
 
-        # Check for existing contents in the images directory
-        for _ in self.images_output_dir.iterdir():
-            # We found something, check if the user wants to overwrite files or quit
-            should_continue = input('output_dir is not empty, files may be overwritten.\nContinue (y/n)? ').lower()
-            if should_continue != 'y' and should_continue != 'yes':
-                quit()
-            break
+        if not self.silent:
+            # Check for existing contents in the images directory
+            for _ in self.images_output_dir.iterdir():
+                # We found something, check if the user wants to overwrite files or quit
+                should_continue = input('output_dir is not empty, files may be overwritten.\nContinue (y/n)? ').lower()
+                if should_continue != 'y' and should_continue != 'yes':
+                    quit()
+                break
 
     def _validate_and_process_input_directory(self):
         self.input_dir = Path(args.input_dir)
@@ -219,7 +223,7 @@ class ImageComposition():
 
         assert len(self.foregrounds_dict) > 0, 'no valid foregrounds were found'
 
-    def validate_and_process_backgrounds(self):
+    def _validate_and_process_backgrounds(self):
         self.backgrounds = []
         for image_file in self.backgrounds_dir.iterdir():
             if not image_file.is_file():
@@ -272,7 +276,7 @@ class ImageComposition():
             # Add category and mask to MaskJsonUtils
             mju.add_category(category, super_category)
             color_categories = {str(mask_rgb_color):{'category':category, 'super_category':super_category}}
-            mju.add_masks(
+            mju.add_mask(
                 composite_path.relative_to(self.output_dir).as_posix(),
                 mask_path.relative_to(self.output_dir).as_posix(),
                 color_categories
@@ -328,6 +332,13 @@ class ImageComposition():
         crop_y_pos = random.randint(0, max_crop_y_pos)
         background = background.crop((crop_x_pos, crop_y_pos, crop_x_pos + self.width, crop_y_pos + self.height))
 
+        # Choose a random x,y position for the foreground
+        max_x_position = background.size[0] - foreground.size[0]
+        max_y_position = background.size[1] - foreground.size[1]
+        assert max_x_position >= 0 and max_y_position >= 0, \
+        f'foreground {foreground_path} is too big ({foreground.size[0]}x{foreground.size[1]}) for the requested output size ({self.width}x{self.height}), check your input parameters'
+        paste_position = (random.randint(0, max_x_position), random.randint(0, max_y_position))
+
         # Create a new foreground image as large as the background and paste it on top
         new_foreground = Image.new('RGBA', background.size, color = (0, 0, 0, 0))
         new_foreground.paste(foreground, paste_position)
@@ -352,10 +363,58 @@ class ImageComposition():
 
         return composite, mask
 
+    def _create_info(self):
+        # A convenience wizard for automatically creating dataset info
+        # The user can always modify the resulting .json manually if needed
+
+        if self.silent:
+            # No user wizard in silent mode
+            return
+
+        should_continue = input('Would you like to create dataset info json? (y/n) ').lower()
+        if should_continue != 'y' and should_continue != 'yes':
+            print('No problem. You can always create the json manually.')
+            quit()
+
+        print('Note: you can always modify the json manually if you need to update this.')
+        info = dict()
+        info['description'] = input('Description: ')
+        info['url'] = input('URL: ')
+        info['version'] = input('Version: ')
+        info['contributor'] = input('Contributor: ')
+        now = datetime.now()
+        info['year'] = now.year
+        info['date_created'] = f'{now.month:0{2}}/{now.day:0{2}}/{now.year}'
+
+        image_license = dict()
+        image_license['id'] = 0
+
+        should_add_license = input('Add an image license? (y/n) ').lower()
+        if should_add_license != 'y' and should_add_license != 'yes':
+            image_license['url'] = ''
+            image_license['name'] = 'None'
+        else:
+            image_license['name'] = input('License name: ')
+            image_license['url'] = input('License URL: ')
+
+        dataset_info = dict()
+        dataset_info['info'] = info
+        dataset_info['license'] = image_license
+
+        # Write the JSON output file
+        output_file_path = Path(self.output_dir) / 'dataset_info.json'
+        with open(output_file_path, 'w+') as json_file:
+            json_file.write(json.dumps(dataset_info))
+
+        print('Successfully created {output_file_path}')
+
+
     # Start here
     def main(self, args):
         self._validate_and_process_args(args)
         self._generate_images()
+        self._create_info()
+        print('Image composition completed.')
 
 if __name__ == "__main__":
     import argparse
@@ -372,6 +431,8 @@ if __name__ == "__main__":
     parser.add_argument("--width", type=int, dest="width", required=True, help="output image pixel width")
     parser.add_argument("--height", type=int, dest="height", required=True, help="output image pixel height")
     parser.add_argument("--output_type", type=str, dest="output_type", help="png or jpg (default)")
+    parser.add_argument("--silent", action='store_true', help="silent mode; doesn't prompt the user for input, \
+                        automatically overwrites files")
 
     args = parser.parse_args()
 

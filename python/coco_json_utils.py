@@ -151,7 +151,7 @@ class AnnotationJsonUtils():
                 print(f'category color not found: {key}; check for missing category or antialiasing')
                 continue
             annotation['category_id'] = self.category_ids[key]
-            annotation['id'] = self.next_annotation_id()
+            annotation['id'] = self._next_annotation_id()
 
             # Find contours in the isolated mask
             contours = measure.find_contours(mask, 0.5, positive_orientation='low')
@@ -300,7 +300,7 @@ class CocoJsonCreator():
             for rgb_color, category in mask_def['color_categories'].items():
                 category_ids_by_rgb[rgb_color] = category_ids_by_name[category['category']]
             annotation_obj = aju.create_coco_annotations(mask_path, image_id, category_ids_by_rgb)
-            annotation_objs.append(annotation_obj)
+            annotation_objs += annotation_obj # Add the new annotations to the existing list
             image_id += 1
 
         return image_objs, annotation_objs
@@ -322,7 +322,7 @@ class CocoJsonCreator():
         }
 
         # Write the json to a file
-        output_path = Path(self.dataset_dir) / 'coco_annotations.json'
+        output_path = Path(self.dataset_dir) / 'coco_instances.json'
         with open(output_path, 'w+') as output_file:
             json.dump(master_obj, output_file)
 

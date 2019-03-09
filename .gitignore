@@ -102,3 +102,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# Specific to CocoSynth
+datasets/*
+!datasets/README.md
