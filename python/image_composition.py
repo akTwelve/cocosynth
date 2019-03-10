@@ -114,6 +114,9 @@ class ImageComposition():
         self.allowed_output_types = ['.png', '.jpg', '.jpeg']
         self.allowed_background_types = ['.png', '.jpg', '.jpeg']
         self.zero_padding = 8 # 00000027.png, supports up to 100 million images
+        self.max_foregrounds = 3
+        self.mask_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+        assert len(self.mask_colors) >= self.max_foregrounds, 'length of mask_colors should be >= max_foregrounds'
 
     def _validate_and_process_args(self, args):
         # Validates input arguments and sets up class variables
@@ -249,15 +252,29 @@ class ImageComposition():
 
         # Create all images/masks (with tqdm to have a progress bar)
         for i in tqdm(range(self.count)):
-            # Randomly choose a foreground and background
+            # Randomly choose a background
             background_path = random.choice(self.backgrounds)
-            super_category = random.choice(list(self.foregrounds_dict.keys()))
-            category = random.choice(list(self.foregrounds_dict[super_category].keys()))
-            foreground_path = random.choice(self.foregrounds_dict[super_category][category])
 
-            # Compose foreground and background
-            mask_rgb_color = (255, 0, 0)
-            composite, mask = self._compose_images(foreground_path, background_path, mask_rgb_color)
+            num_foregrounds = random.randint(1, self.max_foregrounds)
+            foregrounds = []
+            for fg_i in range(num_foregrounds):
+                # Randomly choose a foreground
+                super_category = random.choice(list(self.foregrounds_dict.keys()))
+                category = random.choice(list(self.foregrounds_dict[super_category].keys()))
+                foreground_path = random.choice(self.foregrounds_dict[super_category][category])
+
+                # Get the color
+                mask_rgb_color = self.mask_colors[fg_i]
+
+                foregrounds.append({
+                    'super_category':super_category,
+                    'category':category,
+                    'foreground_path':foreground_path,
+                    'mask_rgb_color':mask_rgb_color
+                })
+
+            # Compose foregrounds and background
+            composite, mask = self._compose_images(foregrounds, background_path)
 
             # Create the file name (used for both composite and mask)
             save_filename = f'{i:0{self.zero_padding}}' # e.g. 00000023.jpg
@@ -273,9 +290,17 @@ class ImageComposition():
             mask_path = self.output_dir / 'masks' / mask_filename # e.g. my_output_dir/masks/00000023.png
             mask.save(mask_path)
 
-            # Add category and mask to MaskJsonUtils
-            mju.add_category(category, super_category)
-            color_categories = {str(mask_rgb_color):{'category':category, 'super_category':super_category}}
+            color_categories = dict()
+            for fg in foregrounds:
+                # Add category and color info
+                mju.add_category(fg['category'], fg['super_category'])
+                color_categories[str(fg['mask_rgb_color'])] = \
+                    {
+                        'category':fg['category'],
+                        'super_category':fg['super_category']
+                    }
+            
+            # Add the mask to MaskJsonUtils
             mju.add_mask(
                 composite_path.relative_to(self.output_dir).as_posix(),
                 mask_path.relative_to(self.output_dir).as_posix(),
@@ -285,42 +310,25 @@ class ImageComposition():
         #Write masks to json
         mju.write_masks_to_json()
 
-    def _compose_images(self, foreground_path, background_path, mask_rgb_color):
+    def _compose_images(self, foregrounds, background_path):
         # Composes a foreground image and a background image and creates a segmentation mask
         # using the specified color. Validation should already be done by now.
         # Args:
-        #     foreground_path: the path to a valid foreground image
+        #     foregrounds: a list of dicts with format:
+        #       [{
+        #           'super_category':super_category,
+        #           'category':category,
+        #           'foreground_path':foreground_path,
+        #           'mask_rgb_color':mask_rgb_color
+        #       },...]
         #     background_path: the path to a valid background image
-        #     mask_rgb_color: the desired foreground color for the mask
         # Returns:
         #     composite: the composed image
         #     mask: the mask image
 
-        # Open foreground and get the alpha channel
-        foreground = Image.open(foreground_path)
-        foreground_alpha = np.array(foreground.getchannel(3))
-        assert np.any(foreground_alpha == 0), f'foreground needs to have some transparency: {str(foreground_path)}'
-
         # Open background and convert to RGBA
         background = Image.open(background_path)
         background = background.convert('RGBA')
-
-        # ** Apply Transformations **
-        # Rotate the foreground
-        angle_degrees = random.randint(0, 359)
-        foreground = foreground.rotate(angle_degrees, resample=Image.BICUBIC, expand=True)
-
-        # Scale the foreground
-        scale = random.random() * .5 + .5 # Pick something between .5 and 1
-        new_size = (int(foreground.size[0] * scale), int(foreground.size[1] * scale))
-        foreground = foreground.resize(new_size, resample=Image.BICUBIC)
-
-        # Adjust foreground brightness
-        brightness_factor = random.random() * .4 + .7 # Pick something between .7 and 1.1
-        enhancer = ImageEnhance.Brightness(foreground)
-        foreground = enhancer.enhance(brightness_factor)
-
-        # Add any other transformations here...
 
         # Crop background to desired size (self.width x self.height), randomly positioned
         bg_width, bg_height = background.size
@@ -330,38 +338,74 @@ class ImageComposition():
         assert max_crop_y_pos >= 0, f'desired height, {self.height}, is greater than background height, {bg_height}, for {str(background_path)}'
         crop_x_pos = random.randint(0, max_crop_x_pos)
         crop_y_pos = random.randint(0, max_crop_y_pos)
-        background = background.crop((crop_x_pos, crop_y_pos, crop_x_pos + self.width, crop_y_pos + self.height))
+        composite = background.crop((crop_x_pos, crop_y_pos, crop_x_pos + self.width, crop_y_pos + self.height))
+        composite_mask = Image.new('RGB', composite.size, 0)
 
-        # Choose a random x,y position for the foreground
-        max_x_position = background.size[0] - foreground.size[0]
-        max_y_position = background.size[1] - foreground.size[1]
-        assert max_x_position >= 0 and max_y_position >= 0, \
-        f'foreground {foreground_path} is too big ({foreground.size[0]}x{foreground.size[1]}) for the requested output size ({self.width}x{self.height}), check your input parameters'
-        paste_position = (random.randint(0, max_x_position), random.randint(0, max_y_position))
+        for fg in foregrounds:
+            fg_path = fg['foreground_path']
 
-        # Create a new foreground image as large as the background and paste it on top
-        new_foreground = Image.new('RGBA', background.size, color = (0, 0, 0, 0))
-        new_foreground.paste(foreground, paste_position)
+            # Perform transformations
+            fg_image = self._transform_foreground(fg, fg_path)
 
-        # Extract the alpha channel from the foreground and paste it into a new image the size of the background
-        alpha_mask = foreground.getchannel(3)
-        new_alpha_mask = Image.new('L', background.size, color = 0)
-        new_alpha_mask.paste(alpha_mask, paste_position)
-        composite = Image.composite(new_foreground, background, new_alpha_mask)
+            # Choose a random x,y position for the foreground
+            max_x_position = composite.size[0] - fg_image.size[0]
+            max_y_position = composite.size[1] - fg_image.size[1]
+            assert max_x_position >= 0 and max_y_position >= 0, \
+            f'foreground {fg_path} is too big ({fg_image.size[0]}x{fg_image.size[1]}) for the requested output size ({self.width}x{self.height}), check your input parameters'
+            paste_position = (random.randint(0, max_x_position), random.randint(0, max_y_position))
 
-        # Grab the alpha pixels above a specified threshold
-        alpha_threshold = 200
-        mask_arr = np.array(np.greater(np.array(new_alpha_mask), alpha_threshold), dtype=np.uint8)
-        uint8_mask = np.uint8(mask_arr) # This is composed of 1s and 0s
+            # Create a new foreground image as large as the composite and paste it on top
+            new_fg_image = Image.new('RGBA', composite.size, color = (0, 0, 0, 0))
+            new_fg_image.paste(fg_image, paste_position)
 
-        # Multiply the mask value (1 or 0) by the color in each RGB channel and ocmbine to get the mask
-        red_channel = uint8_mask * mask_rgb_color[0]
-        green_channel = uint8_mask * mask_rgb_color[1]
-        blue_channel = uint8_mask * mask_rgb_color[2]
-        rgb_mask_arr = np.dstack((red_channel, green_channel, blue_channel))
-        mask = Image.fromarray(rgb_mask_arr, 'RGB')
+            # Extract the alpha channel from the foreground and paste it into a new image the size of the composite
+            alpha_mask = fg_image.getchannel(3)
+            new_alpha_mask = Image.new('L', composite.size, color = 0)
+            new_alpha_mask.paste(alpha_mask, paste_position)
+            composite = Image.composite(new_fg_image, composite, new_alpha_mask)
 
-        return composite, mask
+            # Grab the alpha pixels above a specified threshold
+            alpha_threshold = 200
+            mask_arr = np.array(np.greater(np.array(new_alpha_mask), alpha_threshold), dtype=np.uint8)
+            uint8_mask = np.uint8(mask_arr) # This is composed of 1s and 0s
+
+            # Multiply the mask value (1 or 0) by the color in each RGB channel and combine to get the mask
+            mask_rgb_color = fg['mask_rgb_color']
+            red_channel = uint8_mask * mask_rgb_color[0]
+            green_channel = uint8_mask * mask_rgb_color[1]
+            blue_channel = uint8_mask * mask_rgb_color[2]
+            rgb_mask_arr = np.dstack((red_channel, green_channel, blue_channel))
+            isolated_mask = Image.fromarray(rgb_mask_arr, 'RGB')
+            isolated_alpha = Image.fromarray(uint8_mask * 255, 'L')
+
+            composite_mask = Image.composite(isolated_mask, composite_mask, isolated_alpha)
+
+        return composite, composite_mask
+
+    def _transform_foreground(self, fg, fg_path):
+        # Open foreground and get the alpha channel
+        fg_image = Image.open(fg_path)
+        fg_alpha = np.array(fg_image.getchannel(3))
+        assert np.any(fg_alpha == 0), f'foreground needs to have some transparency: {str(fg_path)}'
+
+        # ** Apply Transformations **
+        # Rotate the foreground
+        angle_degrees = random.randint(0, 359)
+        fg_image = fg_image.rotate(angle_degrees, resample=Image.BICUBIC, expand=True)
+
+        # Scale the foreground
+        scale = random.random() * .5 + .5 # Pick something between .5 and 1
+        new_size = (int(fg_image.size[0] * scale), int(fg_image.size[1] * scale))
+        fg_image = fg_image.resize(new_size, resample=Image.BICUBIC)
+
+        # Adjust foreground brightness
+        brightness_factor = random.random() * .4 + .7 # Pick something between .7 and 1.1
+        enhancer = ImageEnhance.Brightness(fg_image)
+        fg_image = enhancer.enhance(brightness_factor)
+
+        # Add any other transformations here...
+
+        return fg_image
 
     def _create_info(self):
         # A convenience wizard for automatically creating dataset info
