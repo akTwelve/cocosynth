@@ -172,6 +172,12 @@ class AnnotationJsonUtils():
                     segmentation = np.array(poly.exterior.coords).ravel().tolist()
                     annotation['segmentation'].append(segmentation)
 
+            if len(polygons) == 0:
+                # This item doesn't have any visible polygons, ignore it
+                # (This can happen if a randomly placed foreground is covered up
+                #  by other foregrounds)
+                continue
+
             # Combine the polygons to calculate the bounding box and area
             multi_poly = MultiPolygon(polygons)
             x, y, max_x, max_y = multi_poly.bounds
