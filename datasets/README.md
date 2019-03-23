@@ -8,8 +8,5 @@ This directory is intended to contain datasets that the scripts will access, how
 Here are some datasets you can download to populate this directory.
 If any are missing or have broken links, please create an issue on GitHub or contact me via one of the various channels listed at [immersivelimit.com/connect](http://www.immersivelimit.com/connect)
 
-## box_dataset_by_hand
-TBD
-
 ## box_dataset_synthetic
-TBD
+A complete synthetic dataset of boxes. [Download](https://immersivelimit.page.link/gnbR)
