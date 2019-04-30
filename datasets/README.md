@@ -10,3 +10,10 @@ If any are missing or have broken links, please create an issue on GitHub or con
 
 ## box_dataset_synthetic
 A complete synthetic dataset of boxes. [Download](https://immersivelimit.page.link/gnbR)
+
+## weeds
+Foreground and background images for the [Weed Detector](http://www.immersivelimit.com/blog/ai-weed-detector) case study I did. [Download](https://immersivelimit.page.link/euJu)
+
+Test Images and Videos for the Weed Detector. [Download](https://immersivelimit.page.link/Zk6V)
+
+Note: The full dataset I created was several gigabytes of 1024x1024 images so I'm not including it here. You can use this git repo to generate your own. For reference, it contained 10k training images and 1k validation images.
