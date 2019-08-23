@@ -166,11 +166,17 @@ class AnnotationJsonUtils():
 
                 # Make a polygon and simplify it
                 poly = Polygon(contour)
+                poly = poly.simplify(1.0, preserve_topology=False)
+
                 if (poly.area > 16): # Ignore tiny polygons
-                    poly = poly.simplify(1.0, preserve_topology=False)
-                    polygons.append(poly)
-                    segmentation = np.array(poly.exterior.coords).ravel().tolist()
-                    annotation['segmentation'].append(segmentation)
+                    if (poly.geom_type == 'MultiPolygon'):
+                        # if MultiPolygon, take the smallest convex Polygon containing all the points in the object
+                        poly = poly.convex_hull
+
+                    if (poly.geom_type == 'Polygon'): # Ignore if still not a Polygon (could be a line or point)
+                        polygons.append(poly)
+                        segmentation = np.array(poly.exterior.coords).ravel().tolist()
+                        annotation['segmentation'].append(segmentation)
 
             if len(polygons) == 0:
                 # This item doesn't have any visible polygons, ignore it
