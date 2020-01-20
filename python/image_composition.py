@@ -114,9 +114,18 @@ class ImageComposition():
         self.allowed_output_types = ['.png', '.jpg', '.jpeg']
         self.allowed_background_types = ['.png', '.jpg', '.jpeg']
         self.zero_padding = 8 # 00000027.png, supports up to 100 million images
-        self.max_foregrounds = 3
-        self.mask_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
-        assert len(self.mask_colors) >= self.max_foregrounds, 'length of mask_colors should be >= max_foregrounds'
+        # self.max_foregrounds = 3
+        # self.mask_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+        # assert len(self.mask_colors) >= self.max_foregrounds, 'length of mask_colors should be >= max_foregrounds'
+
+    def _create_mask_colors(self):
+        self.mask_colors = []
+        for i in range(self.max_foregrounds):
+            r = random.randint(0, 255)
+            g = random.randint(0, 255)
+            b = random.randint(0, 255)
+            self.mask_colors.append((r, g, b))
+
 
     def _validate_and_process_args(self, args):
         # Validates input arguments and sets up class variables
@@ -142,6 +151,10 @@ class ImageComposition():
             if args.output_type[0] != '.':
                 self.output_type = f'.{args.output_type}'
             assert self.output_type in self.allowed_output_types, f'output_type is not supported: {self.output_type}'
+
+        assert args.max_foregrounds > 0, 'Max foregrounds must be at least 1'
+        self.max_foregrounds = args.max_foregrounds
+        self._create_mask_colors()
 
         # Validate and process output and input directories
         self._validate_and_process_output_directory()
@@ -627,6 +640,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_type", type=str, dest="output_type", help="png or jpg (default)")
     parser.add_argument("--silent", action='store_true', help="silent mode; doesn't prompt the user for input, \
                         automatically overwrites files")
+    parser.add_argument("--max_foregrounds", type=int, dest="max_foregrounds", 
+                            default=3, help="max number of foregrounds to compose")
 
     args = parser.parse_args()
 
