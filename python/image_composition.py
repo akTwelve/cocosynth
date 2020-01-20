@@ -397,7 +397,7 @@ class ImageComposition():
             curr_centroid_y < 0 or 
             curr_centroid_y > img.size[1])
 
-    def _compose_images(self, foregrounds, background_path, avoid_collisions=True):
+    def _compose_images(self, foregrounds, background_path, avoid_collisions=True, scale_by_img_size=True):
         # Composes a foreground image and a background image and creates a segmentation mask
         # using the specified color. Validation should already be done by now.
         # Args:
@@ -434,7 +434,10 @@ class ImageComposition():
             fg_path = fg['foreground_path']
 
             # Perform transformations
-            fg_image = self._transform_foreground(fg, fg_path)
+            if scale_by_img_size:
+                fg_image = self._transform_foreground(fg, fg_path, self.width, self.height)
+            else:
+                fg_image = self._transform_foreground(fg, fg_path)
 
             # Choose a random x,y position for the foreground
             max_x_position = composite.size[0] - fg_image.size[0]
@@ -508,21 +511,42 @@ class ImageComposition():
 
         return composite, composite_mask
 
-    def _transform_foreground(self, fg, fg_path):
+    def _transform_foreground(self, fg, fg_path, img_w=None, img_h=None):
         # Open foreground and get the alpha channel
+
         fg_image = Image.open(fg_path)
         fg_alpha = np.array(fg_image.getchannel(3))
         assert np.any(fg_alpha == 0), f'foreground needs to have some transparency: {str(fg_path)}'
 
         # ** Apply Transformations **
+        # Scale the foreground by a simple method
+        if img_w == None:
+            scale = random.random() * .5 + .5 # Pick something between .5 and 1
+            new_size = (int(fg_image.size[0] * scale), int(fg_image.size[1] * scale))
+        else:
+            # Scale the foreground based on the size of the resulting image
+            # i.e. ensure that the longest side of the foreground image is 
+            # between 25% and 45% of the short side of the background image
+            min_length, max_length = 0.25, 0.45
+            min_bg_len = min(img_w, img_h)
+
+            rand_length = random.random() * (max_length - min_length) + min_length
+            long_side_len = rand_length * min_bg_len
+            # Scale the longest side of the fg to be between the random length % of the bg
+            if fg_image.size[0] > fg_image.size[1]:
+                long_side_dif = long_side_len / fg_image.size[0]
+                short_side_len = long_side_dif * fg_image.size[1]
+                new_size = (int(long_side_len), int(short_side_len))
+            else:
+                long_side_dif = long_side_len / fg_image.size[1]
+                short_side_len = long_side_dif * fg_image.size[0]
+                new_size = (int(short_side_len), int(long_side_len))            
+
+        fg_image = fg_image.resize(new_size, resample=Image.BICUBIC)
+        
         # Rotate the foreground
         angle_degrees = random.randint(0, 359)
         fg_image = fg_image.rotate(angle_degrees, resample=Image.BICUBIC, expand=True)
-
-        # Scale the foreground
-        scale = random.random() * .5 + .5 # Pick something between .5 and 1
-        new_size = (int(fg_image.size[0] * scale), int(fg_image.size[1] * scale))
-        fg_image = fg_image.resize(new_size, resample=Image.BICUBIC)
 
         # Adjust foreground brightness
         brightness_factor = random.random() * .4 + .7 # Pick something between .7 and 1.1
