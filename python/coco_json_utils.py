@@ -154,6 +154,7 @@ class AnnotationJsonUtils():
             annotation['id'] = self._next_annotation_id()
 
             # Find contours in the isolated mask
+            mask = np.asarray(mask, dtype=np.float32)
             contours = measure.find_contours(mask, 0.5, positive_orientation='low')
 
             polygons = []
