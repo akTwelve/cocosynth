@@ -120,22 +120,33 @@ class AnnotationJsonUtils():
         # Breaks mask up into isolated masks based on color
 
         self.isolated_masks = dict()
-        for x in range(self.width):
-            for y in range(self.height):
-                pixel_rgb = self.mask_image.getpixel((x,y))
-                pixel_rgb_str = str(pixel_rgb)
+        # for x in range(self.width):
+        #     for y in range(self.height):
+        #         pixel_rgb = self.mask_image.getpixel((x,y))
+        #         pixel_rgb_str = str(pixel_rgb)
 
-                # If the pixel is any color other than black, add it to a respective isolated image mask
-                if not pixel_rgb == (0, 0, 0):
-                    if self.isolated_masks.get(pixel_rgb_str) is None:
-                        # Isolated mask doesn't have its own image yet, create one
-                        # with 1-bit pixels, default black. Make room for 1 pixel of
-                        # padding on each edge to allow the contours algorithm to work
-                        # when shapes bleed up to the edge
-                        self.isolated_masks[pixel_rgb_str] = Image.new('1', (self.width + 2, self.height + 2))
+        #         # If the pixel is any color other than black, add it to a respective isolated image mask
+        #         if not pixel_rgb == (0, 0, 0):
+        #             if self.isolated_masks.get(pixel_rgb_str) is None:
+        #                 # Isolated mask doesn't have its own image yet, create one
+        #                 # with 1-bit pixels, default black. Make room for 1 pixel of
+        #                 # padding on each edge to allow the contours algorithm to work
+        #                 # when shapes bleed up to the edge
+        #                 self.isolated_masks[pixel_rgb_str] = Image.new('1', (self.width + 2, self.height + 2))
 
-                    # Add the pixel to the mask image, shifting by 1 pixel to account for padding
-                    self.isolated_masks[pixel_rgb_str].putpixel((x + 1, y + 1), 1)
+        #             # Add the pixel to the mask image, shifting by 1 pixel to account for padding
+        #             self.isolated_masks[pixel_rgb_str].putpixel((x + 1, y + 1), 1)
+
+        # This is a much faster way to split masks using Numpy
+        arr = np.array(self.mask_image, dtype=np.uint32)
+        rgb32 = (arr[:,:,0] << 16) + (arr[:,:,1] << 8) + arr[:,:,2]
+        unique_values = np.unique(rgb32)
+        for u in unique_values:
+            if u != 0:
+                r = int((u & (255 << 16)) >> 16)
+                g = int((u & (255 << 8)) >> 8)
+                b = int(u & 255)
+                self.isolated_masks[str((r, g, b))] = np.equal(rgb32, u)
 
     def _create_annotations(self):
         # Creates annotations for each isolated mask
