@@ -114,9 +114,18 @@ class ImageComposition():
         self.allowed_output_types = ['.png', '.jpg', '.jpeg']
         self.allowed_background_types = ['.png', '.jpg', '.jpeg']
         self.zero_padding = 8 # 00000027.png, supports up to 100 million images
-        self.max_foregrounds = 3
-        self.mask_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
-        assert len(self.mask_colors) >= self.max_foregrounds, 'length of mask_colors should be >= max_foregrounds'
+        # self.max_foregrounds = 3
+        # self.mask_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+        # assert len(self.mask_colors) >= self.max_foregrounds, 'length of mask_colors should be >= max_foregrounds'
+
+    def _create_mask_colors(self):
+        self.mask_colors = []
+        for i in range(self.max_foregrounds):
+            r = random.randint(0, 255)
+            g = random.randint(0, 255)
+            b = random.randint(0, 255)
+            self.mask_colors.append((r, g, b))
+
 
     def _validate_and_process_args(self, args):
         # Validates input arguments and sets up class variables
@@ -142,6 +151,10 @@ class ImageComposition():
             if args.output_type[0] != '.':
                 self.output_type = f'.{args.output_type}'
             assert self.output_type in self.allowed_output_types, f'output_type is not supported: {self.output_type}'
+
+        assert args.max_foregrounds > 0, 'Max foregrounds must be at least 1'
+        self.max_foregrounds = args.max_foregrounds
+        self._create_mask_colors()
 
         # Validate and process output and input directories
         self._validate_and_process_output_directory()
@@ -310,7 +323,94 @@ class ImageComposition():
         #Write masks to json
         mju.write_masks_to_json()
 
-    def _compose_images(self, foregrounds, background_path):
+    def _get_point_to_move_from(self, colliding_centroids):
+        '''
+        Average all the centroid locations that the fg was colliding with
+        This gives a point for the fg to move away from
+        input: array of centroids -> [(200, 100), (50, 20), ...]
+        '''
+        return np.mean(colliding_centroids, 0)
+
+    def _is_colliding(self, fg_rect, fg_rect_list):
+        '''
+        Check if the current foreground object is colliding with any foregrounds
+        we've placed on the image already. The overlap threshold controls how much overlap
+        of the rectangles is allowed. The overlap is a proportion of the total area of this
+        foreground object, as opposed to an absolute value
+        '''
+        overlap_thresh = 0.3
+
+        colliding_centroids = []
+        
+        for rect in fg_rect_list:
+            x1, y1, x2, y2 = fg_rect
+            comp_x1, comp_y1, comp_x2, comp_y2 = rect
+            x_overlap = max(0, min(comp_x2, x2) - max(comp_x1, x1))
+            y_overlap = max(0, min(comp_y2, y2) - max(comp_y1, y1))
+
+            rect_area = (x2 - x1) * (y2 - y1)
+            total_overlap_area = x_overlap * y_overlap
+
+            prop_overlap = total_overlap_area / float(rect_area)
+
+            if prop_overlap > overlap_thresh:
+                colliding_centroid = (comp_x2 - comp_x1, comp_y2 - comp_y1)
+                colliding_centroids.append(colliding_centroid)
+        
+        if len(colliding_centroids) == 0:
+            return None
+        else:
+            return self._get_point_to_move_from(colliding_centroids)
+
+    def _get_new_centroid_pos(self, pt_a, pt_b, step_size):
+        '''
+        https://math.stackexchange.com/questions/175896/finding-a-point-along-a-line-a-certain-distance-away-from-another-point
+        Given the point to move from (pt_a), and our current centroid (pt_b), 
+        move further away along the line i.e.:
+        a -------- b --<step_size>-- new_point
+        '''
+        v = np.subtract(pt_b, pt_a)
+        norm_v = v / np.linalg.norm(v)
+
+        new_point = tuple(map(int, pt_b + (step_size * norm_v))) # Convert to an int tuple
+        # print("Moving from {} to {}".format(pt_b, new_point))
+        return new_point
+
+    def _get_rect_position(self, centroid, fg_image):
+        '''
+        Convert a centroid to the corresponding rectangle, given a foreground image
+        '''
+        width, height = fg_image.size
+        x1 = centroid[0] - (width / 2)
+        y1 = centroid[1] - (height / 2)
+        x2 = centroid[0] + (width / 2)
+        y2 = centroid[1] + (height / 2)
+        return [x1, y1, x2, y2]
+
+    def _visited_point_before(self, coll_pt, coll_pts):
+        '''
+        Check if we've visited this point before.
+        Stops collision avoidance from getting stuck in between a group of points
+        '''
+        for pt in coll_pts:
+            if coll_pt[0] == pt[0] and coll_pt[1] == pt[1]:
+                return True
+
+        return False
+
+    def _outside_img(self, img, fg_rect):
+        '''
+        Don't paste the foreground if the centroid is outside the image
+        '''
+        curr_centroid_x = int((fg_rect[0] + fg_rect[2]) / 2)
+        curr_centroid_y = int((fg_rect[1] + fg_rect[3]) / 2)
+
+        return (curr_centroid_x < 0 or 
+            curr_centroid_x > img.size[0] or
+            curr_centroid_y < 0 or 
+            curr_centroid_y > img.size[1])
+
+    def _compose_images(self, foregrounds, background_path, avoid_collisions=True, scale_by_img_size=True):
         # Composes a foreground image and a background image and creates a segmentation mask
         # using the specified color. Validation should already be done by now.
         # Args:
@@ -340,12 +440,17 @@ class ImageComposition():
         crop_y_pos = random.randint(0, max_crop_y_pos)
         composite = background.crop((crop_x_pos, crop_y_pos, crop_x_pos + self.width, crop_y_pos + self.height))
         composite_mask = Image.new('RGB', composite.size, 0)
+    
+        fg_list = []
 
         for fg in foregrounds:
             fg_path = fg['foreground_path']
 
             # Perform transformations
-            fg_image = self._transform_foreground(fg, fg_path)
+            if scale_by_img_size:
+                fg_image = self._transform_foreground(fg, fg_path, self.width, self.height)
+            else:
+                fg_image = self._transform_foreground(fg, fg_path)
 
             # Choose a random x,y position for the foreground
             max_x_position = composite.size[0] - fg_image.size[0]
@@ -353,6 +458,43 @@ class ImageComposition():
             assert max_x_position >= 0 and max_y_position >= 0, \
             f'foreground {fg_path} is too big ({fg_image.size[0]}x{fg_image.size[1]}) for the requested output size ({self.width}x{self.height}), check your input parameters'
             paste_position = (random.randint(0, max_x_position), random.randint(0, max_y_position))
+
+            # Check if colliding, try move if it is
+            if avoid_collisions:
+                fg_rect = [paste_position[0], # x1
+                            paste_position[1], # y1
+                            paste_position[0] + fg_image.size[0], # x2
+                            paste_position[1] + fg_image.size[1]] # y2
+
+                visited_centroids = []
+                colliding_point = self._is_colliding(fg_rect, fg_list)
+
+                while colliding_point is not None:
+                    # Move the fg away from the colliding point
+                    step_size = 50
+                    curr_centroid_x = int((fg_rect[0] + fg_rect[2]) / 2)
+                    curr_centroid_y = int((fg_rect[1] + fg_rect[3]) / 2)
+                    new_centroid_pos = self._get_new_centroid_pos(colliding_point, 
+                        (curr_centroid_x, curr_centroid_y),
+                        step_size) 
+
+                    # print("Moving {} from {} to {}".format(fg_path, (curr_centroid_x, curr_centroid_y), new_centroid_pos))
+                    
+                    if self._visited_point_before(new_centroid_pos, visited_centroids):
+                        print("Tried to re-visit point {}".format(new_centroid_pos))
+                        fg_rect = None
+                        break
+                    visited_centroids.append(new_centroid_pos)
+
+                    fg_rect = self._get_rect_position(new_centroid_pos, fg_image)
+                    colliding_point = self._is_colliding(fg_rect, fg_list)
+
+                if fg_rect is None or self._outside_img(composite, fg_rect):
+                    # print("Outside image {}".format(fg_rect))
+                    continue
+                else:
+                    paste_position = (int(fg_rect[0]), int(fg_rect[1]))
+                    fg_list.append(fg_rect)
 
             # Create a new foreground image as large as the composite and paste it on top
             new_fg_image = Image.new('RGBA', composite.size, color = (0, 0, 0, 0))
@@ -382,21 +524,42 @@ class ImageComposition():
 
         return composite, composite_mask
 
-    def _transform_foreground(self, fg, fg_path):
+    def _transform_foreground(self, fg, fg_path, img_w=None, img_h=None):
         # Open foreground and get the alpha channel
+
         fg_image = Image.open(fg_path)
         fg_alpha = np.array(fg_image.getchannel(3))
         assert np.any(fg_alpha == 0), f'foreground needs to have some transparency: {str(fg_path)}'
 
         # ** Apply Transformations **
+        # Scale the foreground by a simple method
+        if img_w == None:
+            scale = random.random() * .5 + .5 # Pick something between .5 and 1
+            new_size = (int(fg_image.size[0] * scale), int(fg_image.size[1] * scale))
+        else:
+            # Scale the foreground based on the size of the resulting image
+            # i.e. ensure that the longest side of the foreground image is 
+            # between 25% and 45% of the short side of the background image
+            min_length, max_length = 0.25, 0.45
+            min_bg_len = min(img_w, img_h)
+
+            rand_length = random.random() * (max_length - min_length) + min_length
+            long_side_len = rand_length * min_bg_len
+            # Scale the longest side of the fg to be between the random length % of the bg
+            if fg_image.size[0] > fg_image.size[1]:
+                long_side_dif = long_side_len / fg_image.size[0]
+                short_side_len = long_side_dif * fg_image.size[1]
+                new_size = (int(long_side_len), int(short_side_len))
+            else:
+                long_side_dif = long_side_len / fg_image.size[1]
+                short_side_len = long_side_dif * fg_image.size[0]
+                new_size = (int(short_side_len), int(long_side_len))            
+
+        fg_image = fg_image.resize(new_size, resample=Image.BICUBIC)
+        
         # Rotate the foreground
         angle_degrees = random.randint(0, 359)
         fg_image = fg_image.rotate(angle_degrees, resample=Image.BICUBIC, expand=True)
-
-        # Scale the foreground
-        scale = random.random() * .5 + .5 # Pick something between .5 and 1
-        new_size = (int(fg_image.size[0] * scale), int(fg_image.size[1] * scale))
-        fg_image = fg_image.resize(new_size, resample=Image.BICUBIC)
 
         # Adjust foreground brightness
         brightness_factor = random.random() * .4 + .7 # Pick something between .7 and 1.1
@@ -477,6 +640,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_type", type=str, dest="output_type", help="png or jpg (default)")
     parser.add_argument("--silent", action='store_true', help="silent mode; doesn't prompt the user for input, \
                         automatically overwrites files")
+    parser.add_argument("--max_foregrounds", type=int, dest="max_foregrounds", 
+                            default=3, help="max number of foregrounds to compose")
 
     args = parser.parse_args()
 
